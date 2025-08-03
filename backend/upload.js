@@ -1,6 +1,6 @@
 import { create } from '@web3-storage/w3up-client';
 import dotenv from 'dotenv';
-import { File } from 'fetch-blob/file.js'; // Node.js version File
+import { File } from 'undici';
 import crypto from 'crypto';
 
 dotenv.config();
