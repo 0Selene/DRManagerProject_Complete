@@ -6,8 +6,14 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
-// Import your existing upload handler
-import { uploadToIPFS } from './upload.js'; // Use your existing upload logic
+// Import database configuration and models
+import sequelize from './config/database.js';
+import Upload from './models/Upload.js';
+import Content from './models/Content.js';
+import Transaction from './models/Transaction.js';
+
+// Import existing upload handler
+import { uploadToIPFS } from './upload.js';
 
 // ES modules equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -24,12 +30,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Static file service (serving frontend) ()
+// Static file service (serving frontend)
 app.use(express.static(path.join(__dirname, '../frontend')));
 
-// File upload
+// File upload configuration
 const upload = multer({
-    storage: multer.memoryStorage(), // Stored in memory
+    storage: multer.memoryStorage(),
     limits: {
         fileSize: 100 * 1024 * 1024, // 100MB limit
     },
@@ -44,58 +50,50 @@ const upload = multer({
         if (isAllowed) {
             cb(null, true);
         } else {
-            cb(new Error('unsupport file type'), false);
+            cb(new Error('Unsupported file type'), false);
         }
     }
 });
 
-// Store user data (Use memory in development; database recommended for production)
-const userData = {
-    uploads: new Map(),      // Upload records
-    contents: new Map(),     //   
-    transactions: new Map()  // 
-};
+// =================== API ROUTES ===================
 
-// =================== API  ===================
-
-// 1. File upload IPFS
+// 1. File upload to IPFS
 app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
-        console.log('📤 get upload request:', req.file?.originalname);
+        console.log('📤 Received upload request:', req.file?.originalname);
         
         if (!req.file) {
             return res.status(400).json({
                 success: false,
-                error: 'not receive the file'
+                error: 'No file received'
             });
         }
 
-        // 
+        // File size validation
         if (req.file.size > 100 * 1024 * 1024) {
             return res.status(400).json({
                 success: false,
-                error: 'file size beyond 100MB '
+                error: 'File size exceeds 100MB limit'
             });
         }
 
-        // 
+        // Upload to IPFS
         const uploadResult = await uploadToIPFS(req.file.buffer, req.file.originalname);
         
-        // ID
+        // Generate upload ID
         const uploadId = Date.now().toString();
         
-        // Upload records
-        userData.uploads.set(uploadId, {
+        // Save to database
+        await Upload.create({
             id: uploadId,
             fileName: req.file.originalname,
             fileSize: req.file.size,
             mimeType: req.file.mimetype,
-            ipfsHash: uploadResult.ipfsHash || uploadResult.Hash, // 
-            timestamp: new Date().toISOString(),
+            ipfsHash: uploadResult.ipfsHash || uploadResult.Hash,
             status: 'completed'
         });
 
-        console.log('✅ upload successfully:', uploadResult.ipfsHash || uploadResult.Hash);
+        console.log('✅ Upload successful:', uploadResult.ipfsHash || uploadResult.Hash);
 
         res.json({
             success: true,
@@ -107,15 +105,15 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ failed to upload', error);
+        console.error('❌ Upload failed', error);
         res.status(500).json({
             success: false,
-            error: error.message || 'fail'
+            error: error.message || 'Upload failed'
         });
     }
 });
 
-// 2.  ()
+// 2. Content registration
 app.post('/api/content/register', async (req, res) => {
     try {
         const {
@@ -129,21 +127,20 @@ app.post('/api/content/register', async (req, res) => {
             blockNumber
         } = req.body;
 
-        console.log('📝 save the register info', { title, ipfsHash, txHash });
+        console.log('📝 Saving registration info', { title, ipfsHash, txHash });
 
-        // 
+        // Validation
         if (!userAddress || !title || !ipfsHash || !txHash) {
             return res.status(400).json({
                 success: false,
-                error: 'lack of necessary info'
+                error: 'Missing required information'
             });
         }
 
-        // ID
+        // Generate content ID
         const contentId = Date.now().toString();
 
-        // 
-        const contentData = {
+        await Content.create({
             id: contentId,
             userAddress: userAddress.toLowerCase(),
             title,
@@ -153,22 +150,19 @@ app.post('/api/content/register', async (req, res) => {
             ipfsHash,
             txHash,
             blockNumber,
-            timestamp: new Date().toISOString(),
             status: 'registered'
-        };
+        });
 
-        userData.contents.set(contentId, contentData);
-
-        console.log('✅ already save the info');
+        console.log('✅ Information saved successfully');
 
         res.json({
             success: true,
             contentId,
-            message: 'contents register successfully'
+            message: 'Content registered successfully'
         });
 
     } catch (error) {
-        console.error('❌ failed to save', error);
+        console.error('❌ Save failed', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -176,16 +170,16 @@ app.post('/api/content/register', async (req, res) => {
     }
 });
 
-// 3. 
+// 3. Get user content
 app.get('/api/content/user/:address', async (req, res) => {
     try {
         const userAddress = req.params.address.toLowerCase();
-        console.log('📋 get user content:', userAddress);
+        console.log('📋 Getting user content:', userAddress);
 
-        // 
-        const userContents = Array.from(userData.contents.values())
-            .filter(content => content.userAddress === userAddress)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const userContents = await Content.findAll({
+            where: { userAddress },
+            order: [['createdAt', 'DESC']]
+        });
 
         res.json({
             success: true,
@@ -194,7 +188,7 @@ app.get('/api/content/user/:address', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ fail to access user content:', error);
+        console.error('❌ Failed to get user content:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -202,16 +196,16 @@ app.get('/api/content/user/:address', async (req, res) => {
     }
 });
 
-// 4.  ()
+// 4. Get marketplace content
 app.get('/api/content/marketplace', async (req, res) => {
     try {
-        console.log('🛒 get market content');
+        console.log('🛒 Getting marketplace content');
 
-        //  ()
-        const allContents = Array.from(userData.contents.values())
-            .filter(content => content.status === 'registered')
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-            .slice(0, 50); // 
+        const allContents = await Content.findAll({
+            where: { status: 'registered' },
+            order: [['createdAt', 'DESC']],
+            limit: 50
+        });
 
         res.json({
             success: true,
@@ -220,7 +214,7 @@ app.get('/api/content/marketplace', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ fail to access market content:', error);
+        console.error('❌ Failed to get marketplace content:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -228,7 +222,7 @@ app.get('/api/content/marketplace', async (req, res) => {
     }
 });
 
-// 5. 
+// 5. Record transaction
 app.post('/api/transaction/record', async (req, res) => {
     try {
         const {
@@ -241,11 +235,11 @@ app.post('/api/transaction/record', async (req, res) => {
             gasUsed
         } = req.body;
 
-        console.log('💰 record transaction:', { type, txHash, amount });
+        console.log('💰 Recording transaction:', { type, txHash, amount });
 
         const transactionId = Date.now().toString();
         
-        userData.transactions.set(transactionId, {
+        await Transaction.create({
             id: transactionId,
             type,
             userAddress: userAddress.toLowerCase(),
@@ -253,18 +247,17 @@ app.post('/api/transaction/record', async (req, res) => {
             txHash,
             amount: amount || '0',
             blockNumber,
-            gasUsed,
-            timestamp: new Date().toISOString()
+            gasUsed
         });
 
         res.json({
             success: true,
             transactionId,
-            message: 'save transaction'
+            message: 'Transaction recorded successfully'
         });
 
     } catch (error) {
-        console.error('❌ fail to recorod transaction:', error);
+        console.error('❌ Failed to record transaction:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -272,16 +265,16 @@ app.post('/api/transaction/record', async (req, res) => {
     }
 });
 
-// 6. 
+// 6. Get upload status
 app.get('/api/upload/status/:uploadId', async (req, res) => {
     try {
         const uploadId = req.params.uploadId;
-        const uploadData = userData.uploads.get(uploadId);
+        const uploadData = await Upload.findByPk(uploadId);
 
         if (!uploadData) {
             return res.status(404).json({
                 success: false,
-                error: 'upload history not exists'
+                error: 'Upload record not found'
             });
         }
 
@@ -298,28 +291,48 @@ app.get('/api/upload/status/:uploadId', async (req, res) => {
     }
 });
 
-// 7. 
+// 7. Health check
 app.get('/api/health', async (req, res) => {
     try {
-        // 
+        // Health check object
         const health = {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             services: {
                 api: 'running',
-                ipfs: 'unknown', //  IPFS 
-                database: 'memory' // 
+                ipfs: 'unknown',
+                database: 'unknown'
             },
             stats: {
-                totalUploads: userData.uploads.size,
-                totalContents: userData.contents.size,
-                totalTransactions: userData.transactions.size
+                totalUploads: 0,
+                totalContents: 0,
+                totalTransactions: 0
             }
         };
 
-        //  IPFS 
+        // Check database connection
         try {
-            //  IPFS 
+            await sequelize.authenticate();
+            health.services.database = 'healthy';
+            
+            // Get statistics
+            const [uploadCount, contentCount, transactionCount] = await Promise.all([
+                Upload.count(),
+                Content.count(),
+                Transaction.count()
+            ]);
+            
+            health.stats.totalUploads = uploadCount;
+            health.stats.totalContents = contentCount;
+            health.stats.totalTransactions = transactionCount;
+        } catch (dbError) {
+            health.services.database = 'error';
+            health.status = 'unhealthy';
+        }
+
+        // Check IPFS connection
+        try {
+            // IPFS health check logic here
             health.services.ipfs = 'healthy';
         } catch {
             health.services.ipfs = 'error';
@@ -335,18 +348,17 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
-// 8. 
+// 8. Get statistics
 app.get('/api/stats/:address?', async (req, res) => {
     try {
         const userAddress = req.params.address?.toLowerCase();
 
         if (userAddress) {
-            // 
-            const userContents = Array.from(userData.contents.values())
-                .filter(content => content.userAddress === userAddress);
-            
-            const userTransactions = Array.from(userData.transactions.values())
-                .filter(tx => tx.userAddress === userAddress);
+            // Get specific user statistics
+            const [userContents, userTransactions] = await Promise.all([
+                Content.findAll({ where: { userAddress } }),
+                Transaction.findAll({ where: { userAddress } })
+            ]);
 
             const totalEarnings = userTransactions
                 .filter(tx => tx.type === 'purchase')
@@ -357,19 +369,30 @@ app.get('/api/stats/:address?', async (req, res) => {
                 stats: {
                     totalFiles: userContents.length,
                     totalEarnings: totalEarnings.toFixed(4),
-                    activeLicenses: 0, // 
+                    activeLicenses: 0,
                     totalTransactions: userTransactions.length
                 }
             });
         } else {
-            // 
+            // Get global statistics
+            const [uploadCount, contentCount, transactionCount] = await Promise.all([
+                Upload.count(),
+                Content.count(),
+                Transaction.count()
+            ]);
+
+            const uniqueUsers = await Content.count({
+                distinct: true,
+                col: 'userAddress'
+            });
+
             res.json({
                 success: true,
                 stats: {
-                    totalUploads: userData.uploads.size,
-                    totalContents: userData.contents.size,
-                    totalTransactions: userData.transactions.size,
-                    totalUsers: new Set(Array.from(userData.contents.values()).map(c => c.userAddress)).size
+                    totalUploads: uploadCount,
+                    totalContents: contentCount,
+                    totalTransactions: transactionCount,
+                    totalUsers: uniqueUsers
                 }
             });
         }
@@ -382,107 +405,69 @@ app.get('/api/stats/:address?', async (req, res) => {
     }
 });
 
-// ===================  ===================
+// =================== ERROR HANDLING ===================
 
-// File upload
+// File upload error handling
 app.use((error, req, res, next) => {
     if (error instanceof multer.MulterError) {
         if (error.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({
                 success: false,
-                error: ' (100MB)'
+                error: 'File size exceeds limit (100MB)'
             });
         }
     }
     
-    console.error(':', error);
+    console.error('Server error:', error);
     res.status(500).json({
         success: false,
-        error: error.message || ''
+        error: error.message || 'Internal server error'
     });
 });
 
-// 404 
+// 404 handler
 app.use((req, res) => {
     res.status(404).json({
         success: false,
-        error: 'API '
+        error: 'API endpoint not found'
     });
 });
 
-// ===================  ===================
+// =================== SERVER STARTUP ===================
 
-//  ()
-function saveDataToFile() {
+async function startServer() {
     try {
-        const data = {
-            uploads: Array.from(userData.uploads.entries()),
-            contents: Array.from(userData.contents.entries()),
-            transactions: Array.from(userData.transactions.entries()),
-            timestamp: new Date().toISOString()
-        };
+        // Test database connection
+        await sequelize.authenticate();
+        console.log('✅ Database connection successful');
         
-        fs.writeFileSync('./data-backup.json', JSON.stringify(data, null, 2));
-        console.log('💾 ');
+        // Sync database models
+        await sequelize.sync({ force: false });
+        console.log('✅ Database models synchronized');
+        
+        app.listen(PORT, () => {
+            console.log('🚀 DRManager server started successfully');
+            console.log(`📡 API URL: http://localhost:${PORT}`);
+            console.log(`🌐 Frontend URL: http://localhost:${PORT}`);
+            console.log(`💾 Database: PostgreSQL`);
+            console.log('');
+            console.log('📋 Available API endpoints:');
+            console.log('  POST /api/upload              - File upload');
+            console.log('  POST /api/content/register     - Content registration');
+            console.log('  GET  /api/content/user/:address - Get user content');
+            console.log('  GET  /api/content/marketplace  - Get marketplace content');
+            console.log('  POST /api/transaction/record   - Record transaction');
+            console.log('  GET  /api/stats/:address       - Get statistics');
+            console.log('  GET  /api/health               - Health check');
+            console.log('');
+        });
+        
     } catch (error) {
-        console.error('❌ :', error);
+        console.error('❌ Server startup failed:', error);
+        process.exit(1);
     }
 }
 
-//  ()
-function loadDataFromFile() {
-    try {
-        if (fs.existsSync('./data-backup.json')) {
-            const data = JSON.parse(fs.readFileSync('./data-backup.json', 'utf8'));
-            
-            userData.uploads = new Map(data.uploads || []);
-            userData.contents = new Map(data.contents || []);
-            userData.transactions = new Map(data.transactions || []);
-            
-            console.log('📂 ');
-        }
-    } catch (error) {
-        console.error('❌ :', error);
-    }
-}
-
-// 
-if (process.env.SAVE_TO_FILE === 'true') {
-    loadDataFromFile();
-}
-
-// 
-process.on('SIGINT', () => {
-    console.log('\n🛑 ...');
-    
-    if (process.env.SAVE_TO_FILE === 'true') {
-        saveDataToFile();
-        console.log('💾 ');
-    }
-    
-    process.exit(0);
-});
-
-app.listen(PORT, () => {
-    console.log('🚀 DRManager ');
-    console.log(`📡 API : http://localhost:${PORT}`);
-    console.log(`🌐 : http://localhost:${PORT}`);
-    console.log(`💾  ()`);
-    console.log('');
-    console.log('📋  API :');
-    console.log('  POST /api/upload              - File upload');
-    console.log('  POST /api/content/register     - ');
-    console.log('  GET  /api/content/user/:address - ');
-    console.log('  GET  /api/content/marketplace  - ');
-    console.log('  POST /api/transaction/record   - ');
-    console.log('  GET  /api/stats/:address       - ');
-    console.log('  GET  /api/health               - ');
-    console.log('');
-    
-    //  ()
-    if (process.env.SAVE_TO_FILE === 'true') {
-        setInterval(saveDataToFile, 60000); // 
-    }
-});
+startServer();
 
 export default app;

@@ -1,17 +1,15 @@
-// Compatible with CommonJS require
+// 使用 ES Module 导入
 import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-
-const { filesFromPaths } = require('files-from-path');
-const contractABI = require('../frontend/contract.json');
-const dotenv = require('dotenv');
-
-import express from 'express';
-import multer from 'multer';
-import crypto from 'crypto';
-import fs from 'fs';
+import { filesFromPaths } from 'files-from-path';
 import { create } from '@web3-storage/w3up-client';
 import { ethers } from 'ethers';
+import crypto from 'crypto';
+import fs from 'fs';
+import dotenv from 'dotenv';
+
+// 使用 require 只用于 JSON 文件
+const require = createRequire(import.meta.url);
+const contractABI = require('../frontend/contract.json');
 
 dotenv.config();
 
